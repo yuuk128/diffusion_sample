@@ -21,12 +21,14 @@ from ldm.models.diffusion.plms import PLMSSampler
 from diffusers.pipelines.stable_diffusion.safety_checker import StableDiffusionSafetyChecker
 from transformers import AutoFeatureExtractor
 
+# add by lisa
+import datetime
+
 
 # load safety model
 safety_model_id = "CompVis/stable-diffusion-safety-checker"
 safety_feature_extractor = AutoFeatureExtractor.from_pretrained(safety_model_id)
 safety_checker = StableDiffusionSafetyChecker.from_pretrained(safety_model_id)
-nsfw_ok = False
 
 def chunk(it, size):
     it = iter(it)
@@ -226,12 +228,21 @@ def main():
         choices=["full", "autocast"],
         default="autocast"
     ) 
+
+    ## add by lisa
     parser.add_argument(
         "--nsfw_ok",
         action='store_true'
     )
+    
+
+
     opt = parser.parse_args()
+
     nsfw_ok = opt.nsfw_ok
+    JST = datetime.timezone(datetime.timedelta(hours=9), 'JST')
+    out_prefix = datetime.datetime.now(JST).strftime('%Y%m%d_%H%M%S') + "_" + str(opt.seed) + "_"
+
 
     if opt.laion400m:
         print("Falling back to LAION 400M model...")
@@ -323,7 +334,7 @@ def main():
                                 x_sample = 255. * rearrange(x_sample.cpu().numpy(), 'c h w -> h w c')
                                 img = Image.fromarray(x_sample.astype(np.uint8))
                                 img = put_watermark(img, wm_encoder)
-                                img.save(os.path.join(sample_path, f"{base_count:05}.png"))
+                                img.save(os.path.join(sample_path, f"{out_prefix}{base_count:05}.png"))
                                 base_count += 1
 
                         if not opt.skip_grid:
@@ -339,7 +350,7 @@ def main():
                     grid = 255. * rearrange(grid, 'c h w -> h w c').cpu().numpy()
                     img = Image.fromarray(grid.astype(np.uint8))
                     img = put_watermark(img, wm_encoder)
-                    img.save(os.path.join(outpath, f'grid-{grid_count:04}.png'))
+                    img.save(os.path.join(outpath, f'{out_prefix}grid-{grid_count:04}.png'))
                     grid_count += 1
 
                 toc = time.time()
@@ -350,3 +361,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
