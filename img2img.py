@@ -18,7 +18,8 @@ from pytorch_lightning import seed_everything
 from ldm.util import instantiate_from_config
 from ldm.models.diffusion.ddim import DDIMSampler
 from ldm.models.diffusion.plms import PLMSSampler
-
+# add by lisa
+import datetime
 
 def chunk(it, size):
     it = iter(it)
@@ -192,12 +193,18 @@ def main():
         choices=["full", "autocast"],
         default="autocast"
     )
+
+    ## add by lisa
     parser.add_argument(
         "--nsfw_ok",
         action='store_true'
     )
-    
     opt = parser.parse_args()
+
+    nsfw_ok = opt.nsfw_ok
+    JST = datetime.timezone(datetime.timedelta(hours=9), 'JST')
+    out_prefix = datetime.datetime.now(JST).strftime('%Y%m%d_%H%M%S') + "_" + str(opt.seed) + "_"
+
     seed_everything(opt.seed)
 
     config = OmegaConf.load(f"{opt.config}")
@@ -272,7 +279,7 @@ def main():
                             for x_sample in x_samples:
                                 x_sample = 255. * rearrange(x_sample.cpu().numpy(), 'c h w -> h w c')
                                 Image.fromarray(x_sample.astype(np.uint8)).save(
-                                    os.path.join(sample_path, f"{base_count:05}.png"))
+                                    os.path.join(sample_path, f"{out_prefix}{base_count:05}.png"))
                                 base_count += 1
                         all_samples.append(x_samples)
 
@@ -284,7 +291,7 @@ def main():
 
                     # to image
                     grid = 255. * rearrange(grid, 'c h w -> h w c').cpu().numpy()
-                    Image.fromarray(grid.astype(np.uint8)).save(os.path.join(outpath, f'grid-{grid_count:04}.png'))
+                    Image.fromarray(grid.astype(np.uint8)).save(os.path.join(outpath, f'{out_prefix}grid-{grid_count:04}.png'))
                     grid_count += 1
 
                 toc = time.time()
