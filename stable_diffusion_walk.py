@@ -212,3 +212,164 @@ class StableDiffusionVideoCreater:
 
         if make_video:
             return self.make_video_ffmpeg(output_path, f"{name}.mp4", fps=fps)
+
+    def walkImg2Img(
+        self, 
+        prompts=["blueberry spaghetti", "strawberry spaghetti"],
+        seeds=[42, 123],
+        num_steps=5,
+        output_dir="dreams",
+        name="berry_good_spaghetti",
+        init_images = [],
+        strength = 0.8,
+        guidance_scale=7.5,
+        eta=0.0,
+        num_inference_steps=50,
+        do_loop=False,
+        make_video=False,
+        use_lerp_for_text=False,
+        scheduler="klms",  # choices: default, ddim, klms
+        disable_tqdm=False,
+        upsample=False,
+        fps=30,
+        less_vram=False,
+    ):
+        """Generate video frames/a video given a list of prompts and seeds.
+
+        Args:
+            prompts (List[str], optional): List of . Defaults to ["blueberry spaghetti", "strawberry spaghetti"].
+            seeds (List[int], optional): List of random seeds corresponding to given prompts.
+            num_steps (int, optional): Number of steps to walk. Increase this value to 60-200 for good results. Defaults to 5.
+            output_dir (str, optional): Root dir where images will be saved. Defaults to "dreams".
+            name (str, optional): Sub directory of output_dir to save this run's files. Defaults to "berry_good_spaghetti".
+            height (int, optional): Height of image to generate. Defaults to 512.
+            width (int, optional): Width of image to generate. Defaults to 512.
+            guidance_scale (float, optional): Higher = more adherance to prompt. Lower = let model take the wheel. Defaults to 7.5.
+            eta (float, optional): ETA. Defaults to 0.0.
+            num_inference_steps (int, optional): Number of diffusion steps. Defaults to 50.
+            do_loop (bool, optional): Whether to loop from last prompt back to first. Defaults to False.
+            make_video (bool, optional): Whether to make a video or just save the images. Defaults to False.
+            use_lerp_for_text (bool, optional): Use LERP instead of SLERP for text embeddings when walking. Defaults to False.
+            scheduler (str, optional): Which scheduler to use. Defaults to "klms". Choices are "default", "ddim", "klms".
+            disable_tqdm (bool, optional): Whether to turn off the tqdm progress bars. Defaults to False.
+            upsample (bool, optional): If True, uses Real-ESRGAN to upsample images 4x. Requires it to be installed
+                which you can do by running: `pip install git+https://github.com/xinntao/Real-ESRGAN.git`. Defaults to False.
+            fps (int, optional): The frames per second (fps) that you want the video to use. Does nothing if make_video is False. Defaults to 30.
+            less_vram (bool, optional): Allow higher resolution output on smaller GPUs. Yields same result at the expense of 10% speed. Defaults to False.
+
+        Returns:
+            str: Path to video file saved if make_video=True, else None.
+        """
+        if upsample:
+            from .upsampling import PipelineRealESRGAN
+
+            upsampling_pipeline = PipelineRealESRGAN.from_pretrained('nateraw/real-esrgan')
+
+        if less_vram:
+            self.pipeline.enable_attention_slicing()
+
+        self.pipeline.set_progress_bar_config(disable=disable_tqdm)
+
+        self.pipeline.scheduler = self.SCHEDULERS[scheduler]
+
+        output_path = Path(output_dir) / name
+        output_path.mkdir(exist_ok=True, parents=True)
+
+        # Write prompt info to file in output dir so we can keep track of what we did
+        prompt_config_path = output_path / 'prompt_config.json'
+        prompt_config_path.write_text(
+            json.dumps(
+                dict(
+                    prompts=prompts,
+                    seeds=seeds,
+                    num_steps=num_steps,
+                    name=name,
+                    guidance_scale=guidance_scale,
+                    eta=eta,
+                    num_inference_steps=num_inference_steps,
+                    do_loop=do_loop,
+                    make_video=make_video,
+                    use_lerp_for_text=use_lerp_for_text,
+                    scheduler=scheduler
+                ),
+                indent=2,
+                sort_keys=False,
+            )
+        )
+
+        assert len(prompts) == len(seeds)
+
+        first_prompt, *prompts = prompts
+        embeds_a = self.pipeline.embed_text(first_prompt)
+
+        is_same_image = len(init_images) == 1
+        first_image , *init_images = init_images
+
+        first_seed, *seeds = seeds
+        _latents_a = self.pipeline.img2latents(
+            init_image = first_image,
+            generator  = torch.Generator(device=self.pipeline.device).manual_seed(first_seed),
+            strength   = strength,
+            num_inference_steps = num_inference_steps,
+            device = self.pipeline.device,
+        )
+        latents_a = _latents_a.detach()
+        
+
+        if do_loop:
+            prompts.append(first_prompt)
+            seeds.append(first_seed)
+
+        frame_index = 0
+        for prompt, seed, init_image in zip(prompts, seeds, init_images):
+            # Text
+            embeds_b = self.pipeline.embed_text(prompt)
+
+            # Latent Noise
+            latents_b = self.pipeline.img2latents(
+                init_image = init_image,
+                generator  = torch.Generator(device=self.pipeline.device).manual_seed(first_seed),
+                strength   = strength,
+                num_inference_steps = num_inference_steps,
+                device = self.pipeline.device,
+            ).detach()
+
+            for i, t in enumerate(np.linspace(0, 1, num_steps)):
+                do_print_progress = (i == 0) or ((frame_index + 1) % 20 == 0)
+                if do_print_progress:
+                    print(f"COUNT: {frame_index+1}/{len(seeds)*num_steps}")
+
+                if use_lerp_for_text:
+                    embeds = torch.lerp(embeds_a, embeds_b, float(t))
+                else:
+                    embeds = self.slerp(float(t), embeds_a, embeds_b)
+                latents = self.slerp(float(t), latents_a, latents_b)
+                #latents = _latents_a
+
+                with torch.autocast("cuda"):
+                    init_image = None
+                    if is_same_image:
+                        init_image = first_image
+                    im = self.pipeline(
+                        init_latents=latents,
+                        init_image = first_image,
+                        generator  = torch.Generator(device=self.pipeline.device).manual_seed(first_seed),
+                        text_embeddings=embeds,
+                        guidance_scale=guidance_scale,
+                        eta=eta,
+                        strength = strength,
+                        num_inference_steps=num_inference_steps,
+                        output_type='pil' if not upsample else 'numpy'
+                    )["sample"][0]
+
+                    if upsample:
+                        im = upsampling_pipeline(im)
+
+                im.save(output_path / ("frame%06d.jpg" % frame_index))
+                frame_index += 1
+
+            embeds_a = embeds_b
+            latents_a = latents_b
+
+        if make_video:
+            return self.make_video_ffmpeg(output_path, f"{name}.mp4", fps=fps)
