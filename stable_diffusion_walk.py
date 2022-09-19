@@ -319,6 +319,7 @@ class StableDiffusionVideoCreater:
         if do_loop:
             prompts.append(first_prompt)
             seeds.append(first_seed)
+            init_images.append(first_image)
 
         frame_index = 0
         for prompt, seed, init_image in zip(prompts, seeds, init_images):
